@@ -24,11 +24,12 @@ const db = {};
 db.Sequelize = Sequelize;
 db.sequelize = Db;
 db.Users = require("../models/UserModel")(Db, DataTypes);
+db.Investor = require("../models/InvestorModel")(Db, DataTypes);
 
 db.sequelize
-  .sync()
+  .sync({ force: true })
   .then(() => {
-    console.log(`yes re-sunc`);
+    console.log(`yes re-sync`);
   })
   .catch((error) => {
     console.log(`error creating database`, error);

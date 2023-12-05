@@ -1,0 +1,295 @@
+require("dotenv").config();
+const express = require("express");
+const bodyParser = require("body-parser");
+const cors = require("cors");
+const expressSession = require("express-session");
+const path = require("path");
+const app = express();
+const PORT = process.env.PORT || 8000;
+const { default: axios } = require("axios");
+const qs = require("querystring");
+const jwt = require("jsonwebtoken");
+const db = require("./config/db");
+const UsersModel = db.Users;
+const InvestorModel = db.Investor;
+
+app.use(
+  cors({
+    origin: "*",
+    credentials: true,
+  })
+);
+app.use(bodyParser.urlencoded({ extended: true }));
+app.use(bodyParser.json());
+app.set("view engine", "hbs");
+app.set("views", path.join(__dirname, "./views"));
+app.use(
+  expressSession({
+    secret: process.env.SESSION_SECRET,
+    resave: true,
+    saveUninitialized: true,
+  })
+);
+
+const UserAuthorization = (type) => {
+  return encodeURI(
+    `https://www.linkedin.com/oauth/v2/authorization?client_id=${process.env.USER_CLIENT_ID}&response_type=code&scope=${process.env.SCOPES}&redirect_uri=${process.env.USER_REDIRECT_URL}`
+  );
+};
+const InvestorAuthorization = () => {
+  return encodeURI(
+    `https://www.linkedin.com/oauth/v2/authorization?client_id=${process.env.INVESTOR_CLIENT_ID}&response_type=code&scope=${process.env.SCOPES}&redirect_uri=${process.env.INVESTOR_REDIRECT_URL}`
+  );
+};
+
+app.get("/", (req, res) => {
+  res.render("index");
+});
+
+app.get("/signup", (req, res) => {
+  res.render("signup");
+});
+
+app.get("/login", (req, res) => {
+  res.render("login");
+});
+
+app.get("/auth/linkedin/user", (req, res) => {
+  res.redirect(UserAuthorization());
+});
+
+app.get("/auth/linkedin/investor", (req, res) => {
+  res.redirect(InvestorAuthorization());
+});
+app.get("/auth/linkedin/callback/user", async (req, res) => {
+  const authorizationCode = req.query.code;
+  console.log("authorizationCode", authorizationCode);
+  // making payload for accessToken api:
+  try {
+    const payload = {
+      client_id: process.env.USER_CLIENT_ID,
+      client_secret: process.env.USER_CLIENT_SECRET,
+      redirect_uri: process.env.USER_REDIRECT_URL,
+      grant_type: "authorization_code",
+      code: authorizationCode,
+    };
+
+    // res.send(authorizationCode);
+
+    // hitting accessToken api and sending payload in responce:
+    const access_token_url = `https://www.linkedin.com/oauth/v2/accessToken?grant_type=authorization_code&code=${authorizationCode}&redirect_uri=${process.env.USER_REDIRECT_URL}&client_id=${process.env.USER_CLIENT_ID}&client_secret=${process.env.USER_CLIENT_SECRET}`;
+    var access_token;
+    const res_token = await axios
+      .post(access_token_url)
+      .then((res) => {
+        access_token = res.data.access_token;
+      })
+      .catch((err) => {
+        console.log(err);
+      });
+    console.log("access_token", access_token);
+
+    // now hitting linkedin userinfo api and sending Bearer token init to get user information
+    const user_info_url = `https://api.linkedin.com/v2/userinfo`;
+    if (access_token) {
+      const res_user_info = await axios
+        .get(user_info_url, {
+          headers: {
+            Authorization: `Bearer ${access_token}`,
+          },
+        })
+        .then(async (response) => {
+          const user = response.data;
+          const existingUser = await UsersModel.findOne({
+            where: {
+              email: user.email,
+            },
+          });
+          if (existingUser) {
+            // User already exists, redirect to dashboard it means login
+            const token = jwt.sign(
+              { _id: existingUser._id },
+              process.env.JWT_SECRET,
+              {
+                expiresIn: "20m",
+              }
+            );
+            if (!token) {
+              return res.redirect("http://127.0.0.1:5173/login");
+            }
+            return res.redirect(
+              `http://127.0.0.1:5173/UserDashboard?authToken=${token}`
+            );
+          }
+
+          const newUser = await UsersModel.create({
+            firstName: user.given_name,
+            lastName: user.family_name,
+            email: user.email,
+            profile_pic: user.picture,
+            linkedin_name: user.name,
+            linkedin_id: user.sub,
+          });
+          if (newUser) {
+            // creatingnew user it means user is signing up
+            const token = jwt.sign(
+              { _id: newUser._id },
+              process.env.JWT_SECRET,
+              {
+                expiresIn: "20m",
+              }
+            );
+            if (!token) {
+              return res.redirect("http://127.0.0.1:5173/login");
+            }
+            return res.redirect(
+              `http://127.0.0.1:5173/UserDashboard?authToken=${token}`
+            );
+          } else {
+            // Handle the case where user creation failed, redirect to dashboard
+            return res.redirect("http://127.0.0.1:5173/login");
+          }
+        })
+        .catch((err) => {
+          console.log("ERROR: ", err);
+        });
+    } else {
+      console.log("access_token not found");
+    }
+  } catch (error) {
+    console.log(
+      "Error fetching user profile:",
+      error.response?.data || error.message
+    );
+    return res.json({
+      error: error.response?.data || error.message,
+    });
+  }
+});
+
+app.get("/auth/linkedin/callback/investor", async (req, res) => {
+  const authorizationCode = req.query.code;
+  console.log("authorizationCode", authorizationCode);
+  // making payload for accessToken api:
+  try {
+    const payload = {
+      client_id: process.env.INVESTOR_CLIENT_ID,
+      client_secret: process.env.INVESTOR_CLIENT_SECRET,
+      redirect_uri: process.env.INVESTOR_REDIRECT_URL,
+      grant_type: "authorization_code",
+      code: authorizationCode,
+    };
+
+    // res.send(authorizationCode);
+
+    // hitting accessToken api and sending payload in responce:
+    const access_token_url = `https://www.linkedin.com/oauth/v2/accessToken?grant_type=authorization_code&code=${authorizationCode}&redirect_uri=${process.env.INVESTOR_REDIRECT_URL}&client_id=${process.env.INVESTOR_CLIENT_ID}&client_secret=${process.env.INVESTOR_CLIENT_SECRET}`;
+    var access_token;
+    const res_token = await axios
+      .post(access_token_url)
+      .then((res) => {
+        access_token = res.data.access_token;
+      })
+      .catch((err) => {
+        console.log(err);
+      });
+    console.log("access_token", access_token);
+
+    // now hitting linkedin userinfo api and sending Bearer token init to get user information
+    const user_info_url = `https://api.linkedin.com/v2/userinfo`;
+    if (access_token) {
+      const res_user_info = await axios
+        .get(user_info_url, {
+          headers: {
+            Authorization: `Bearer ${access_token}`,
+          },
+        })
+        .then(async (response) => {
+          const investor = response.data;
+          const existingInvestor = await InvestorModel.findOne({
+            where: {
+              email: investor.email,
+            },
+          });
+          if (existingInvestor) {
+            // User already exists, redirect to dashboard it means login
+            const token = jwt.sign(
+              { _id: existingInvestor._id },
+              process.env.JWT_SECRET,
+              {
+                expiresIn: "20m",
+              }
+            );
+            if (!token) {
+              return res.redirect("http://127.0.0.1:5173/login");
+            }
+            return res.redirect(
+              `http://127.0.0.1:5173/InvestorDashboard?authToken=${token}`
+            );
+          }
+
+          const newInvestor = await InvestorModel.create({
+            firstName: investor.given_name,
+            lastName: investor.family_name,
+            email: investor.email,
+            country: investor.locale.country  ,
+            linkedinName: investor.name,
+            linkedinId: investor.sub,
+          });
+          if (newInvestor) {
+            // creatingnew user it means user is signing up
+            const token = jwt.sign(
+              { _id: newInvestor._id },
+              process.env.JWT_SECRET,
+              {
+                expiresIn: "20m",
+              }
+            );
+            if (!token) {
+              return res.redirect("http://127.0.0.1:5173/login");
+            }
+            return res.redirect(
+              `http://127.0.0.1:5173/InvestorDashboard?authToken=${token}`
+            );
+          } else {
+            // Handle the case where user creation failed, redirect to dashboard
+            return res.redirect("http://127.0.0.1:5173/login");
+          }
+        })
+        .catch((err) => {
+          console.log("ERROR: ", err);
+        });
+    } else {
+      console.log("access_token not found");
+    }
+  } catch (error) {
+    console.log(
+      "Error fetching user profile:",
+      error.response?.data || error.message
+    );
+    return res.json({
+      error: error.response?.data || error.message,
+    });
+  }
+});
+
+app.get("/dashboard", (req, res) => {
+  res.render("dashboard");
+});
+
+app.get("/getUserInfo", (req, res) => {
+  try {
+    const authToken = req.headers.authorization.token;
+    const decoded = jwt.verify(authToken, process.env.JWT_SECRET);
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      message: error.message,
+      error: error,
+    });
+  }
+});
+
+app.listen(PORT, () => {
+  console.log(`http://127.0.0.1:${PORT}`);
+});
